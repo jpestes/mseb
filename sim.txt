@@ -1,0 +1,1077 @@
+library(CGEN)
+library(MASS)
+
+invLogit <- function(x) {
+  return(exp(x)/(1+exp(x)))
+}
+
+min5 <- function(x) {
+  return(min(5,exp(x)))
+}
+
+
+# Number of simulation runs
+numMC <- 1000
+
+# Number of cohorts
+K <- 10
+
+# Define population sample sizes
+sampleSizes <- seq(1000,1900,100)
+sumNk <- sum(sampleSizes)
+popSizes <- 200*sampleSizes
+cohorts <- c(rep(1,sampleSizes[1]), rep(2,sampleSizes[2]), rep(3,sampleSizes[3]), rep(4,sampleSizes[4]), rep(5,sampleSizes[5]),
+             rep(6,sampleSizes[6]), rep(7,sampleSizes[7]), rep(8,sampleSizes[8]), rep(9,sampleSizes[9]), rep(10,sampleSizes[10]))
+
+# Define parameters
+eta0k <- -1*seq(1, 1.2, length.out=K)          
+etakS1 <- seq(0.1, 0.2, length.out=K)  
+etakS2 <- seq(0, 0.1, length.out=K)
+gamma0k <- -1*seq(3.6, 3.8, length.out=K)   
+gammaG <- 0.2  
+gammaE <- 0.2  
+gammaGE<- 0.1  
+gammaS1 <- 0.2
+gammaS2 <- 0.1
+
+# Keep track of estimates
+estsGEIPDKMC <- matrix(NA,numMC,8)
+sesGEIPDKMC <- matrix(NA,numMC,8)
+estsGEMMETAMC <- matrix(NA,numMC,8)
+sesGEMMETAMC <- matrix(NA,numMC,8)
+estsGEMETAMC <- matrix(NA,numMC,4)
+sesGEMETAMC <- matrix(NA,numMC,4)
+
+estsGIPDKMC <- matrix(NA,numMC,8)
+sesGIPDKMC <- matrix(NA,numMC,8)
+estsGMMETAMC <- matrix(NA,numMC,8)
+sesGMMETAMC <- matrix(NA,numMC,8)
+estsGMETAMC <- matrix(NA,numMC,4)
+sesGMETAMC <- matrix(NA,numMC,4)
+
+estsEIPDKMC <- matrix(NA,numMC,8)
+sesEIPDKMC <- matrix(NA,numMC,8)
+estsEMMETAMC <- matrix(NA,numMC,8)
+sesEMMETAMC <- matrix(NA,numMC,8)
+estsEMETAMC <- matrix(NA,numMC,4)
+sesEMETAMC <- matrix(NA,numMC,4)
+
+zzz <- 1
+
+while(zzz <= numMC) {  
+
+# Index List for Samples
+df <- data.frame(id=1:sumNk,di=NA,gi=NA,ei=NA,s1=NA,s2=NA,cohort=cohorts)
+
+####################################
+# Begin Generate Case-Control Data
+####################################
+
+# thetak <- .4*rnorm(K,0,.02) + .6*rnorm(K,0,.04)
+# thetak <- runif(K,-.2,.2)
+thetak <- rep(0,K)
+
+for(k in 1:K) { 
+  Nk <- popSizes[k]
+  s1 <- matrix(rbinom(Nk,1,.50),Nk,1)
+  s2 <- matrix(rnorm(Nk,0,.5),Nk,1)
+
+  x <- matrix(rnorm(Nk,0,.5),Nk,1)*(s1 == 0) + matrix(rnorm(Nk,.1,.5),Nk,1)*(s1 == 1)
+  e <- matrix(apply(x,1,min5),Nk,1)
+  #e <- matrix(rbinom(Nk,1,.25),Nk,1)
+
+  maf <- invLogit(eta0k[k] + etakS1[k]*s1 + etakS2[k]*s2 + thetak[k]*e)
+  g <- rbinom(Nk,1,maf) + rbinom(Nk,1,maf)
+  
+  #print(mean(g)/2)
+  
+  d <- rbinom(Nk,1,invLogit(gamma0k[k] + gammaG*g + gammaE*e + gammaGE*g*e + gammaS1*s1 + gammaS2*s2))
+  #print(mean(d))
+  indCases <- sample(which(d == 1),sampleSizes[k]/2,replace=FALSE)
+  indControls <- sample(which(d == 0),sampleSizes[k]/2,replace=FALSE)
+  df[cohorts == k,c("di","gi","ei","s1","s2")] <- rbind(cbind(d[indCases],g[indCases],e[indCases],s1[indCases],s2[indCases]),
+                                                   cbind(d[indControls],g[indControls],e[indControls],s1[indControls],s2[indControls]))
+}
+
+df$eiC <- (df$ei - mean(df$ei))/sd(df$ei)
+
+####################################
+# End Generating Population Data
+####################################
+
+####################################
+# Begin IPD Analysis
+####################################
+
+###############################
+### Begin theta_k and eta_k ###
+###############################
+
+fitLogReg <- glm(di ~ gi*eiC + s1 + s2 + factor(cohort),family=binomial,data=df)
+	
+fitCGENUml <- snp.logistic(data=df,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2 + factor(cohort),
+	strata.var= ~ factor(cohort)*eiC + factor(cohort)*factor(s1) + factor(cohort)*s2 + factor(cohort))
+	
+fitCGENCml <- snp.logistic(data=df,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2 + factor(cohort),
+	strata.var= ~ factor(cohort)*factor(s1) + factor(cohort)*s2 + factor(cohort))
+	
+thetaParms <- c("eiC","factorcohort2:eiC", "factorcohort3:eiC", "factorcohort4:eiC", "factorcohort5:eiC", 
+"factorcohort6:eiC", "factorcohort7:eiC", "factorcohort8:eiC", "factorcohort9:eiC",
+"factorcohort10:eiC")
+
+thetaIndices <- which(fitCGENUml$model.info$strata.var %in% thetaParms)
+
+if(length(names(fitCGENUml)) == length(names(fitCGENCml))) {
+	
+ucEst <- c(fitCGENUml$CML$parms,fitCGENUml$CML$strata.parms[-1*thetaIndices])
+p <- length(ucEst)
+cEst <- c(fitCGENCml$CML$parms,fitCGENCml$CML$strata.parms)
+diffEst <- matrix(ucEst - cEst, p, 1)
+
+# fitCGENUml$model.info$strata.var
+constMatrix <- matrix(rep(0,K*length(fitCGENUml$model.info$strata.var)),K,length(fitCGENUml$model.info$strata.var))
+constMatrix[,thetaIndices[1]] <- 1
+for(i in 2:K) {
+  constMatrix[i,thetaIndices[i]] <- 1
+}
+
+thetaHat <- constMatrix%*%fitCGENUml$CML$strata.parms
+covThetaHat <- constMatrix%*%fitCGENUml$CML$strata.cov%*%t(constMatrix)
+deltaT <- K*diffEst%*%t(thetaHat)%*%ginv(thetaHat%*%t(thetaHat))
+trV <- sum(diag(covThetaHat))
+allNames <- which(colnames(fitCGENUml$CML$cov.full) %in% names(fitCGENUml$CML$strata.parms)[thetaIndices])
+VCOV <- fitCGENUml$CML$cov.full[-1*allNames,-1*allNames]
+vInv <- solve(VCOV)
+
+# V Full
+V11 <- VCOV
+V12 <- rbind(fitCGENCml$EB$UML.CML.cov,matrix(0,30,45))
+V13 <- matrix(fitCGENUml$CML$cov.full[-1*allNames,allNames],45,K)
+V21 <- t(V12)
+V22 <- fitCGENCml$CML$cov.full
+V23 <- matrix(0,45,K)
+V31 <- t(V13)
+V32 <- t(V23)
+V33 <- covThetaHat
+VFull <- rbind(cbind(V11,V12,V13),cbind(V21,V22,V23),cbind(V31,V32,V33))
+
+# V Reduced
+V11 <- VCOV
+V12 <- rbind(fitCGENCml$EB$UML.CML.cov,matrix(0,30,45))
+V21 <- t(V12)
+V22 <- fitCGENCml$CML$cov.full
+VReduced <- rbind(cbind(V11,V12),cbind(V21,V22))
+
+# EB1
+A <- as.numeric(K^(-1)*(t(thetaHat)%*%thetaHat))*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(VCOV + deltaTAdelta)
+EB1 <- deltaTAdelta%*%wInverse%*%ucEst + VCOV%*%wInverse%*%cEst
+wConst <- K
+w <- as.numeric((1+wConst*t(diffEst)%*%vInv%*%diffEst)^(-1))
+C <- w*diag(rep(1,p),p,p) - 2*w^2*wConst*diffEst%*%t(diffEst)%*%vInv
+gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C)
+covEB1 <- gradMatrix%*%VReduced%*%t(gradMatrix)
+index <- which(colnames(fitCGENUml$CML$cov.full) %in% "gi:eiC")
+seEB1 <- sqrt(covEB1[index,index])
+
+# EB2
+tau2hat <- as.numeric(K^(-1)*(t(thetaHat)%*%thetaHat - trV))
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(VCOV + deltaTAdelta)
+EB2 <- deltaTAdelta%*%wInverse%*%ucEst + VCOV%*%wInverse%*%cEst
+wConst <- as.numeric(K^2*tau2hat*(t(thetaHat)%*%thetaHat)^(-1))
+w <- as.numeric((1+wConst*t(diffEst)%*%vInv%*%diffEst)^(-1))
+C <- w*diag(rep(1,p),p,p) - 2*w^2*wConst*diffEst%*%t(diffEst)%*%vInv
+if(tau2hat != 0) { 
+if(t(thetaHat)%*%thetaHat > .01) {
+  D <- as.numeric(2*K*w^2*trV*(t(thetaHat)%*%thetaHat)^(-2)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C, D)
+  V <- VFull
+} else {
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C)
+  V <- VReduced
+}
+covEB2 <- gradMatrix%*%V%*%t(gradMatrix)
+index <- which(colnames(fitCGENUml$CML$cov.full) %in% "gi:eiC")
+seEB2 <- sqrt(covEB2[index,index])
+} else {
+  index <- which(colnames(fitCGENCml$CML$cov) %in% "gi:eiC")
+  covEB2 <- fitCGENCml$CML$cov
+  seEB2 <- sqrt(covEB2[index,index])
+}
+
+
+# EB3
+fxn <- function(x) {
+  vk <- diag(covThetaHat)
+  sum(1/(rep(x,K)+vk) - thetaHat^2/(rep(x,K)+vk)^2)
+}
+tau2hat <- as.numeric(uniroot(fxn,c(-10,10))$root)
+initTau2 <- tau2hat
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(VCOV + deltaTAdelta)
+EB3 <- deltaTAdelta%*%wInverse%*%ucEst + VCOV%*%wInverse%*%cEst
+wConst <- as.numeric(K^2*tau2hat*(t(thetaHat)%*%thetaHat)^(-1))
+w <- as.numeric((1+wConst*t(diffEst)%*%vInv%*%diffEst)^(-1))
+C <- w*diag(rep(1,p),p,p) - 2*w^2*wConst*diffEst%*%t(diffEst)%*%vInv
+if(tau2hat != 0) {
+if(t(thetaHat)%*%thetaHat > .01) {
+  E <- as.numeric(-2*w^2*wConst*(t(thetaHat)%*%thetaHat)^(-1)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C, E)
+  V <- VFull
+} else {
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C)
+  V <- VReduced
+}
+covEB3 <- gradMatrix%*%V%*%t(gradMatrix)
+index <- which(colnames(fitCGENUml$CML$cov.full) %in% "gi:eiC")
+seEB3 <- sqrt(covEB3[index,index])
+} else {
+  index <- which(colnames(fitCGENCml$CML$cov) %in% "gi:eiC")
+  covEB3 <- fitCGENCml$CML$cov
+  seEB3 <- sqrt(covEB3[index,index])
+}
+
+
+# EB4
+epsilon <- 1
+tolerance <- 10^(-8)
+maxIter <- 20
+iterCounter <- 0
+vk <- diag(covThetaHat)
+tau2hat <- initTau2
+while((epsilon > tolerance) & iterCounter < maxIter) {
+  temp <- sum(1/(rep(tau2hat,K)+vk))^(-1)*sum(1/(tau2hat + vk)*(thetaHat^2 - vk))
+  epsilon <- abs(tau2hat - temp)
+  tau2hat <- temp
+  iterCounter <- iterCounter + 1
+}
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(VCOV + deltaTAdelta)
+EB4 <- deltaTAdelta%*%wInverse%*%ucEst + VCOV%*%wInverse%*%cEst
+w <- as.numeric((1+wConst*t(diffEst)%*%vInv%*%diffEst)^(-1))
+C <- w*diag(rep(1,p),p,p) - 2*w^2*wConst*diffEst%*%t(diffEst)%*%vInv
+if(tau2hat != 0) {
+if(t(thetaHat)%*%thetaHat > .01) {
+  E <- as.numeric(-2*w^2*wConst*(t(thetaHat)%*%thetaHat)^(-1)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C, E)
+  V <- VFull
+} else {
+  gradMatrix <- cbind(diag(rep(1,p),p,p) - C, C)
+  V <- VReduced
+}
+covEB4 <- gradMatrix%*%V%*%t(gradMatrix)
+index <- which(colnames(fitCGENUml$CML$cov.full) %in% "gi:eiC")
+seEB4 <- sqrt(covEB4[index,index])
+} else {
+  index <- which(colnames(fitCGENCml$CML$cov) %in% "gi:eiC")
+  covEB4 <- fitCGENCml$CML$cov
+  seEB4 <- sqrt(covEB4[index,index])
+}
+
+
+estsGEIPDKMC[zzz,1] <- summary(fitLogReg)$coef["gi:eiC",1]
+sesGEIPDKMC[zzz,1] <- summary(fitLogReg)$coef["gi:eiC",2]
+estsGEIPDKMC[zzz,2] <- fitCGENUml$CML$parms["gi:eiC"]
+sesGEIPDKMC[zzz,2] <- sqrt(fitCGENUml$CML$cov["gi:eiC","gi:eiC"])
+estsGEIPDKMC[zzz,3] <- fitCGENCml$CML$parms["gi:eiC"]
+sesGEIPDKMC[zzz,3] <- sqrt(fitCGENCml$CML$cov["gi:eiC","gi:eiC"])
+estsGEIPDKMC[zzz,4] <- fitCGENCml$EB$parms["gi:eiC"]
+sesGEIPDKMC[zzz,4] <- sqrt(fitCGENCml$EB$cov["gi:eiC","gi:eiC"])
+estsGEIPDKMC[zzz,5] <- EB1["gi:eiC",1]
+sesGEIPDKMC[zzz,5] <- seEB1
+estsGEIPDKMC[zzz,6] <- EB2["gi:eiC",1]
+sesGEIPDKMC[zzz,6] <- seEB2
+estsGEIPDKMC[zzz,7] <- EB3["gi:eiC",1]
+sesGEIPDKMC[zzz,7] <- seEB3
+estsGEIPDKMC[zzz,8] <- EB4["gi:eiC",1]
+sesGEIPDKMC[zzz,8] <- seEB4
+
+estsGIPDKMC[zzz,1] <- summary(fitLogReg)$coef["gi",1]
+sesGIPDKMC[zzz,1] <- summary(fitLogReg)$coef["gi",2]
+estsGIPDKMC[zzz,2] <- fitCGENUml$CML$parms["gi"]
+sesGIPDKMC[zzz,2] <- sqrt(fitCGENUml$CML$cov["gi","gi"])
+estsGIPDKMC[zzz,3] <- fitCGENCml$CML$parms["gi"]
+sesGIPDKMC[zzz,3] <- sqrt(fitCGENCml$CML$cov["gi","gi"])
+estsGIPDKMC[zzz,4] <- fitCGENCml$EB$parms["gi"]
+sesGIPDKMC[zzz,4] <- sqrt(fitCGENCml$EB$cov["gi","gi"])
+estsGIPDKMC[zzz,5] <- EB1["gi",1]
+sesGIPDKMC[zzz,5] <- sqrt(covEB1[14,14])
+estsGIPDKMC[zzz,6] <- EB2["gi",1]
+sesGIPDKMC[zzz,6] <- sqrt(covEB2[14,14])
+estsGIPDKMC[zzz,7] <- EB3["gi",1]
+sesGIPDKMC[zzz,7] <- sqrt(covEB3[14,14])
+estsGIPDKMC[zzz,8] <- EB4["gi",1]
+sesGIPDKMC[zzz,8] <- sqrt(covEB4[14,14])
+
+estsEIPDKMC[zzz,1] <- summary(fitLogReg)$coef["eiC",1]
+sesEIPDKMC[zzz,1] <- summary(fitLogReg)$coef["eiC",2]
+estsEIPDKMC[zzz,2] <- fitCGENUml$CML$parms["eiC"]
+sesEIPDKMC[zzz,2] <- sqrt(fitCGENUml$CML$cov["eiC","eiC"])
+estsEIPDKMC[zzz,3] <- fitCGENCml$CML$parms["eiC"]
+sesEIPDKMC[zzz,3] <- sqrt(fitCGENCml$CML$cov["eiC","eiC"])
+estsEIPDKMC[zzz,4] <- fitCGENCml$EB$parms["eiC"]
+sesEIPDKMC[zzz,4] <- sqrt(fitCGENCml$EB$cov["eiC","eiC"])
+estsEIPDKMC[zzz,5] <- EB1["eiC",1]
+sesEIPDKMC[zzz,5] <- sqrt(covEB1[2,2])
+estsEIPDKMC[zzz,6] <- EB2["eiC",1]
+sesEIPDKMC[zzz,6] <- sqrt(covEB2[2,2])
+estsEIPDKMC[zzz,7] <- EB3["eiC",1]
+sesEIPDKMC[zzz,7] <- sqrt(covEB3[2,2])
+estsEIPDKMC[zzz,8] <- EB4["eiC",1]
+sesEIPDKMC[zzz,8] <- sqrt(covEB4[2,2])
+
+###############################
+### End theta_k and eta_k ###
+###############################
+
+
+####################################
+# Begin Meta-Analysis
+####################################
+
+df1 <- subset(df, df$cohort == 1)
+df1$eiC <- (df1$ei - mean(df1$ei))/sd(df1$ei)
+df2 <- subset(df, df$cohort == 2)
+df2$eiC <- (df2$ei - mean(df2$ei))/sd(df2$ei)
+df3 <- subset(df, df$cohort == 3)
+df3$eiC <- (df3$ei - mean(df3$ei))/sd(df3$ei)
+df4 <- subset(df, df$cohort == 4)
+df4$eiC <- (df4$ei - mean(df4$ei))/sd(df4$ei)
+df5 <- subset(df, df$cohort == 5)
+df5$eiC <- (df5$ei - mean(df5$ei))/sd(df5$ei)
+df6 <- subset(df, df$cohort == 6)
+df6$eiC <- (df6$ei - mean(df6$ei))/sd(df6$ei)
+df7 <- subset(df, df$cohort == 7)
+df7$eiC <- (df7$ei - mean(df7$ei))/sd(df7$ei)
+df8 <- subset(df, df$cohort == 8)
+df8$eiC <- (df8$ei - mean(df8$ei))/sd(df8$ei)
+df9 <- subset(df, df$cohort == 9)
+df9$eiC <- (df9$ei - mean(df9$ei))/sd(df9$ei)
+df10 <- subset(df, df$cohort == 10)
+df10$eiC <- (df10$ei - mean(df10$ei))/sd(df10$ei)
+
+fitLogReg1 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df1)
+fitLogReg2 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df2)
+fitLogReg3 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df3)
+fitLogReg4 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df4)
+fitLogReg5 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df5)
+fitLogReg6 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df6)
+fitLogReg7 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df7)
+fitLogReg8 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df8)
+fitLogReg9 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df9)
+fitLogReg10 <- glm(di ~ gi*eiC + s1 + s2,family=binomial,data=df10)
+
+est1 <- matrix(fitLogReg1$coefficients[-1],5,1)
+est2 <- matrix(fitLogReg2$coefficients[-1],5,1)
+est3 <- matrix(fitLogReg3$coefficients[-1],5,1)
+est4 <- matrix(fitLogReg4$coefficients[-1],5,1)
+est5 <- matrix(fitLogReg5$coefficients[-1],5,1)
+est6 <- matrix(fitLogReg6$coefficients[-1],5,1)
+est7 <- matrix(fitLogReg7$coefficients[-1],5,1)
+est8 <- matrix(fitLogReg8$coefficients[-1],5,1)
+est9 <- matrix(fitLogReg9$coefficients[-1],5,1)
+est10 <- matrix(fitLogReg10$coefficients[-1],5,1)
+
+invCov1 <- solve(vcov(fitLogReg1)[-1,-1])
+invCov2 <- solve(vcov(fitLogReg2)[-1,-1])
+invCov3 <- solve(vcov(fitLogReg3)[-1,-1])
+invCov4 <- solve(vcov(fitLogReg4)[-1,-1])
+invCov5 <- solve(vcov(fitLogReg5)[-1,-1])
+invCov6 <- solve(vcov(fitLogReg6)[-1,-1])
+invCov7 <- solve(vcov(fitLogReg7)[-1,-1])
+invCov8 <- solve(vcov(fitLogReg8)[-1,-1])
+invCov9 <- solve(vcov(fitLogReg9)[-1,-1])
+invCov10 <- solve(vcov(fitLogReg10)[-1,-1])
+
+ivwCovs <- solve(invCov1 + invCov2 + invCov3 + invCov4 + invCov5 + invCov6 + invCov7 + invCov8 + invCov9 + invCov10)
+ivwSE <- sqrt(ivwCovs["gi:eiC","gi:eiC"])
+
+ivwEsts <- ivwCovs%*%(invCov1%*%est1 + invCov2%*%est2 + invCov3%*%est3 + invCov4%*%est4 + invCov5%*%est5 + invCov6%*%est6 + invCov7%*%est7 + invCov8%*%est8 + invCov9%*%est9 + invCov10%*%est10)
+ivwEst <- ivwEsts["gi:eiC",1]
+
+fitCGENUml1 <- snp.logistic(data=df1,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml1 <- snp.logistic(data=df1,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml2 <- snp.logistic(data=df2,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml2 <- snp.logistic(data=df2,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml3 <- snp.logistic(data=df3,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml3 <- snp.logistic(data=df3,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml4 <- snp.logistic(data=df4,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml4 <- snp.logistic(data=df4,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml5 <- snp.logistic(data=df5,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml5 <- snp.logistic(data=df5,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml6 <- snp.logistic(data=df6,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml6 <- snp.logistic(data=df6,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)		
+	
+fitCGENUml7 <- snp.logistic(data=df7,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml7 <- snp.logistic(data=df7,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+	
+fitCGENUml8 <- snp.logistic(data=df8,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml8 <- snp.logistic(data=df8,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+
+fitCGENUml9 <- snp.logistic(data=df9,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml9 <- snp.logistic(data=df9,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)	
+		
+fitCGENUml10 <- snp.logistic(data=df10,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ eiC + factor(s1) + s2)
+	
+fitCGENCml10 <- snp.logistic(data=df10,response.var="di",snp.var="gi",
+	int.vars="eiC",
+	main.vars= ~ eiC + s1 + s2,
+	strata.var= ~ factor(s1) + s2)
+
+nameLengthsUml <- c(length(names(fitCGENUml1)),length(names(fitCGENUml2)),length(names(fitCGENUml3)),length(names(fitCGENUml4)),
+                 length(names(fitCGENUml5)),length(names(fitCGENUml6)),length(names(fitCGENUml7)),length(names(fitCGENUml8)),
+                 length(names(fitCGENUml9)),length(names(fitCGENUml10)))
+
+nameLengthsCml <- c(length(names(fitCGENCml1)),length(names(fitCGENCml2)),length(names(fitCGENCml3)),length(names(fitCGENCml4)),
+                 length(names(fitCGENCml5)),length(names(fitCGENCml6)),length(names(fitCGENCml7)),length(names(fitCGENCml8)),
+                 length(names(fitCGENCml9)),length(names(fitCGENCml10)))
+                 	
+if(sum(nameLengthsUml == nameLengthsCml) == 10) {
+	
+ucEst1 <- matrix(fitCGENUml1$CML$parms[-1],5,1)
+ucEst2 <- matrix(fitCGENUml2$CML$parms[-1],5,1)
+ucEst3 <- matrix(fitCGENUml3$CML$parms[-1],5,1)
+ucEst4 <- matrix(fitCGENUml4$CML$parms[-1],5,1)
+ucEst5 <- matrix(fitCGENUml5$CML$parms[-1],5,1)
+ucEst6 <- matrix(fitCGENUml6$CML$parms[-1],5,1)
+ucEst7 <- matrix(fitCGENUml7$CML$parms[-1],5,1)
+ucEst8 <- matrix(fitCGENUml8$CML$parms[-1],5,1)
+ucEst9 <- matrix(fitCGENUml9$CML$parms[-1],5,1)
+ucEst10 <- matrix(fitCGENUml10$CML$parms[-1],5,1)
+
+ucInvCov1 <- solve(fitCGENUml1$CML$cov[-1,-1])
+ucInvCov2 <- solve(fitCGENUml2$CML$cov[-1,-1])
+ucInvCov3 <- solve(fitCGENUml3$CML$cov[-1,-1])
+ucInvCov4 <- solve(fitCGENUml4$CML$cov[-1,-1])
+ucInvCov5 <- solve(fitCGENUml5$CML$cov[-1,-1])
+ucInvCov6 <- solve(fitCGENUml6$CML$cov[-1,-1])
+ucInvCov7 <- solve(fitCGENUml7$CML$cov[-1,-1])
+ucInvCov8 <- solve(fitCGENUml8$CML$cov[-1,-1])
+ucInvCov9 <- solve(fitCGENUml9$CML$cov[-1,-1])
+ucInvCov10 <- solve(fitCGENUml10$CML$cov[-1,-1])
+
+cEst1 <- matrix(fitCGENCml1$CML$parms[-1],5,1)
+cEst2 <- matrix(fitCGENCml2$CML$parms[-1],5,1)
+cEst3 <- matrix(fitCGENCml3$CML$parms[-1],5,1)
+cEst4 <- matrix(fitCGENCml4$CML$parms[-1],5,1)
+cEst5 <- matrix(fitCGENCml5$CML$parms[-1],5,1)
+cEst6 <- matrix(fitCGENCml6$CML$parms[-1],5,1)
+cEst7 <- matrix(fitCGENCml7$CML$parms[-1],5,1)
+cEst8 <- matrix(fitCGENCml8$CML$parms[-1],5,1)
+cEst9 <- matrix(fitCGENCml9$CML$parms[-1],5,1)
+cEst10 <- matrix(fitCGENCml10$CML$parms[-1],5,1)
+
+cInvCov1 <- solve(fitCGENCml1$CML$cov[-1,-1])
+cInvCov2 <- solve(fitCGENCml2$CML$cov[-1,-1])
+cInvCov3 <- solve(fitCGENCml3$CML$cov[-1,-1])
+cInvCov4 <- solve(fitCGENCml4$CML$cov[-1,-1])
+cInvCov5 <- solve(fitCGENCml5$CML$cov[-1,-1])
+cInvCov6 <- solve(fitCGENCml6$CML$cov[-1,-1])
+cInvCov7 <- solve(fitCGENCml7$CML$cov[-1,-1])
+cInvCov8 <- solve(fitCGENCml8$CML$cov[-1,-1])
+cInvCov9 <- solve(fitCGENCml9$CML$cov[-1,-1])
+cInvCov10 <- solve(fitCGENCml10$CML$cov[-1,-1])
+
+ebEst1 <- matrix(fitCGENCml1$EB$parms[-1],5,1)
+ebEst2 <- matrix(fitCGENCml2$EB$parms[-1],5,1)
+ebEst3 <- matrix(fitCGENCml3$EB$parms[-1],5,1)
+ebEst4 <- matrix(fitCGENCml4$EB$parms[-1],5,1)
+ebEst5 <- matrix(fitCGENCml5$EB$parms[-1],5,1)
+ebEst6 <- matrix(fitCGENCml6$EB$parms[-1],5,1)
+ebEst7 <- matrix(fitCGENCml7$EB$parms[-1],5,1)
+ebEst8 <- matrix(fitCGENCml8$EB$parms[-1],5,1)
+ebEst9 <- matrix(fitCGENCml9$EB$parms[-1],5,1)
+ebEst10 <- matrix(fitCGENCml10$EB$parms[-1],5,1)
+
+ebInvCov1 <- solve(fitCGENCml1$EB$cov[-1,-1])
+ebInvCov2 <- solve(fitCGENCml2$EB$cov[-1,-1])
+ebInvCov3 <- solve(fitCGENCml3$EB$cov[-1,-1])
+ebInvCov4 <- solve(fitCGENCml4$EB$cov[-1,-1])
+ebInvCov5 <- solve(fitCGENCml5$EB$cov[-1,-1])
+ebInvCov6 <- solve(fitCGENCml6$EB$cov[-1,-1])
+ebInvCov7 <- solve(fitCGENCml7$EB$cov[-1,-1])
+ebInvCov8 <- solve(fitCGENCml8$EB$cov[-1,-1])
+ebInvCov9 <- solve(fitCGENCml9$EB$cov[-1,-1])
+ebInvCov10 <- solve(fitCGENCml10$EB$cov[-1,-1])
+
+ucIvwCovs <- solve(ucInvCov1 + ucInvCov2 + ucInvCov3 + ucInvCov4 + ucInvCov5 + ucInvCov6 + ucInvCov7 + ucInvCov8 + ucInvCov9 + ucInvCov10)
+ucIvwEsts <- ucIvwCovs%*%(ucInvCov1%*%ucEst1 + ucInvCov2%*%ucEst2 + ucInvCov3%*%ucEst3 + ucInvCov4%*%ucEst4 + ucInvCov5%*%ucEst5 + ucInvCov6%*%ucEst6 + ucInvCov7%*%ucEst7 + ucInvCov8%*%ucEst8 + ucInvCov9%*%ucEst9 + ucInvCov10%*%ucEst10)
+
+cIvwCovs <- solve(cInvCov1 + cInvCov2 + cInvCov3 + cInvCov4 + cInvCov5 + cInvCov6 + cInvCov7 + cInvCov8 + cInvCov9 + cInvCov10)
+cIvwEsts <- cIvwCovs%*%(cInvCov1%*%cEst1 + cInvCov2%*%cEst2 + cInvCov3%*%cEst3 + cInvCov4%*%cEst4 + cInvCov5%*%cEst5 + cInvCov6%*%cEst6 + cInvCov7%*%cEst7 + cInvCov8%*%cEst8 + cInvCov9%*%cEst9 + cInvCov10%*%cEst10)
+
+ebIvwCovs <- solve(ebInvCov1 + ebInvCov2 + ebInvCov3 + ebInvCov4 + ebInvCov5 + ebInvCov6 + ebInvCov7 + ebInvCov8 + ebInvCov9 + ebInvCov10)
+ebIvwEsts <- ebIvwCovs%*%(ebInvCov1%*%ebEst1 + ebInvCov2%*%ebEst2 + ebInvCov3%*%ebEst3 + ebInvCov4%*%ebEst4 + ebInvCov5%*%ebEst5 + ebInvCov6%*%ebEst6 + ebInvCov7%*%ebEst7 + ebInvCov8%*%ebEst8 + ebInvCov9%*%ebEst9 + ebInvCov10%*%ebEst10)
+
+diffEst <- ucIvwEsts - cIvwEsts
+thetaHat <- matrix(c(fitCGENUml1$CML$strata.parms[2],fitCGENUml2$CML$strata.parms[2],fitCGENUml3$CML$strata.parms[2],
+            fitCGENUml4$CML$strata.parms[2], fitCGENUml5$CML$strata.parms[2], fitCGENUml6$CML$strata.parms[2], fitCGENUml7$CML$strata.parms[2],
+            fitCGENUml8$CML$strata.parms[2], fitCGENUml9$CML$strata.parms[2], fitCGENUml10$CML$strata.parms[2]),K,1)
+covThetaHat <- c(fitCGENUml1$CML$strata.cov[2,2],fitCGENUml2$CML$strata.cov[2,2],fitCGENUml3$CML$strata.cov[2,2],
+       fitCGENUml4$CML$strata.cov[2,2],fitCGENUml5$CML$strata.cov[2,2],fitCGENUml6$CML$strata.cov[2,2], fitCGENUml7$CML$strata.cov[2,2],
+       fitCGENUml8$CML$strata.cov[2,2], fitCGENUml9$CML$strata.cov[2,2], fitCGENUml10$CML$strata.cov[2,2])
+
+trV <- sum(covThetaHat)
+
+deltaT <- K*diffEst%*%t(thetaHat)%*%ginv(thetaHat%*%t(thetaHat))
+vInv <- solve(ucIvwCovs)
+
+covMatrix1 <- fitCGENCml1$EB$UML.CML.cov[2:6,2:6]
+covMatrix2 <- fitCGENCml2$EB$UML.CML.cov[2:6,2:6]
+covMatrix3 <- fitCGENCml3$EB$UML.CML.cov[2:6,2:6]
+covMatrix4 <- fitCGENCml4$EB$UML.CML.cov[2:6,2:6]
+covMatrix5 <- fitCGENCml5$EB$UML.CML.cov[2:6,2:6]
+covMatrix6 <- fitCGENCml6$EB$UML.CML.cov[2:6,2:6]
+covMatrix7 <- fitCGENCml7$EB$UML.CML.cov[2:6,2:6]
+covMatrix8 <- fitCGENCml8$EB$UML.CML.cov[2:6,2:6]
+covMatrix9 <- fitCGENCml9$EB$UML.CML.cov[2:6,2:6]
+covMatrix10 <- fitCGENCml10$EB$UML.CML.cov[2:6,2:6]
+
+getMatrixCov <- function(x,index) {
+  numRows <- length(x)
+  if(index == 1) { 
+    leftM <- matrix(x,numRows,1)
+    middleM <- c()
+    rightM <- matrix(rep(0,numRows*9),numRows,9)
+  } else if(index == 10) {
+    leftM <- matrix(rep(0,numRows*9),numRows,9)
+    middleM <- c()
+    rightM <- matrix(x,numRows,1)
+  } else {
+    lNum <- index - 1
+    rNum <- 10 - index
+    leftM <- matrix(rep(0,numRows*lNum),numRows,lNum)
+    middleM <- x
+    rightM <- matrix(rep(0,numRows*rNum),numRows,rNum)
+  }
+  return(cbind(leftM,middleM,rightM))
+}
+
+uccCovMatrix <- ucIvwCovs%*%(ucInvCov1%*%covMatrix1%*%t(cInvCov1) + ucInvCov2%*%covMatrix2%*%t(cInvCov2) + 
+ucInvCov3%*%covMatrix3%*%t(cInvCov3) + ucInvCov4%*%covMatrix4%*%t(cInvCov4) + ucInvCov5%*%covMatrix5%*%t(cInvCov5) + 
+ucInvCov6%*%covMatrix6%*%t(cInvCov6) + ucInvCov7%*%covMatrix7%*%t(cInvCov7) + ucInvCov8%*%covMatrix8%*%t(cInvCov8) + 
+ucInvCov9%*%covMatrix9%*%t(cInvCov9) + ucInvCov10%*%covMatrix10%*%t(cInvCov10))%*%t(cIvwCovs)
+
+ucThetaCovMatrix <- ucIvwCovs%*%(ucInvCov1%*%getMatrixCov(fitCGENUml1$EB$UML.CML.cov[2:6,8],1) + ucInvCov2%*%getMatrixCov(fitCGENUml2$EB$UML.CML.cov[2:6,8],2) +
+ ucInvCov3%*%getMatrixCov(fitCGENUml3$EB$UML.CML.cov[2:6,8],3) + ucInvCov4%*%getMatrixCov(fitCGENUml4$EB$UML.CML.cov[2:6,8],4) + ucInvCov5%*%getMatrixCov(fitCGENUml5$EB$UML.CML.cov[2:6,8],5) + 
+ ucInvCov6%*%getMatrixCov(fitCGENUml6$EB$UML.CML.cov[2:6,8],6) + ucInvCov7%*%getMatrixCov(fitCGENUml7$EB$UML.CML.cov[2:6,8],7) + ucInvCov8%*%getMatrixCov(fitCGENUml8$EB$UML.CML.cov[2:6,8],8) + 
+ ucInvCov9%*%getMatrixCov(fitCGENUml9$EB$UML.CML.cov[2:6,8],9) + ucInvCov10%*%getMatrixCov(fitCGENUml10$EB$UML.CML.cov[2:6,8],10))
+ 
+cThetaCovMatrix <- matrix(rep(0,5*K),5,K)
+ 
+# EB1
+A <- as.numeric(K^(-1)*(t(thetaHat)%*%thetaHat))*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(ucIvwCovs + deltaTAdelta)
+EB1 <- deltaTAdelta%*%wInverse%*%ucIvwEsts + ucIvwCovs%*%wInverse%*%cIvwEsts
+wConst <- K
+w <- as.numeric((1+wConst*t(diffEst)%*%vInv%*%diffEst)^(-1))
+C <- w*diag(rep(1,5),5,5) - 2*w^2*wConst*diffEst%*%t(diffEst)%*%vInv
+gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C)
+V <- cbind(ucIvwCovs,uccCovMatrix)
+V <- rbind(V, cbind(t(uccCovMatrix), cIvwCovs))
+covEB1 <- gradMatrix%*%V%*%t(gradMatrix)
+seEB1 <- sqrt(covEB1[5,5])
+
+
+# EB2 
+tau2hat <- as.numeric(K^(-1)*(t(thetaHat)%*%thetaHat - trV))
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(ucIvwCovs + deltaTAdelta)
+EB2 <- deltaTAdelta%*%wInverse%*%ucIvwEsts + ucIvwCovs%*%wInverse%*%cIvwEsts
+if(tau2hat != 0) { 
+if(t(thetaHat)%*%thetaHat > .01) {
+  D <- as.numeric(2*K*w^2*trV*(t(thetaHat)%*%thetaHat)^(-2)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C, D)
+  V <- cbind(ucIvwCovs,uccCovMatrix,ucThetaCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix),cIvwCovs,cThetaCovMatrix))
+  V <- rbind(V, cbind(t(ucThetaCovMatrix),t(cThetaCovMatrix),diag(covThetaHat,K,K)))
+} else {
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C)
+  V <- cbind(ucIvwCovs,uccCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix), cIvwCovs))
+}
+covEB2 <- gradMatrix%*%V%*%t(gradMatrix)
+seEB2 <- sqrt(covEB2[5,5])
+} else {
+  covEB2 <- cIvwCovs
+  seEB2 <- sqrt(covEB2[5,5])
+}
+
+# EB3
+fxn <- function(x) {
+  vk <- covThetaHat
+  sum(1/(rep(x,K)+vk) - thetaHat^2/(rep(x,K)+vk)^2)
+}
+tau2hat <- as.numeric(uniroot(fxn,c(-10,10))$root)
+initTau2 <- tau2hat
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(ucIvwCovs + deltaTAdelta)
+EB3 <- deltaTAdelta%*%wInverse%*%ucIvwEsts + ucIvwCovs%*%wInverse%*%cIvwEsts
+if(tau2hat != 0) { 
+if(t(thetaHat)%*%thetaHat > .01) {
+  E <- as.numeric(-2*w^2*wConst*(t(thetaHat)%*%thetaHat)^(-1)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C, E)
+  V <- cbind(ucIvwCovs,uccCovMatrix,ucThetaCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix),cIvwCovs,cThetaCovMatrix))
+  V <- rbind(V, cbind(t(ucThetaCovMatrix),t(cThetaCovMatrix),diag(covThetaHat,K,K)))
+} else {
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C)
+  V <- cbind(ucIvwCovs,uccCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix), cIvwCovs))
+}
+covEB3 <- gradMatrix%*%V%*%t(gradMatrix)
+seEB3 <- sqrt(covEB3[5,5])
+} else {
+  covEB3 <- cIvwCovs
+  seEB3 <- sqrt(covEB3[5,5])
+}
+
+# EB4
+epsilon <- 1
+tolerance <- 10^(-8)
+maxIter <- 20
+iterCounter <- 0
+vk <- covThetaHat
+tau2hat <- initTau2
+while((epsilon > tolerance) & iterCounter < maxIter) {
+  temp <- sum(1/(rep(tau2hat,K)+vk))^(-1)*sum(1/(tau2hat + vk)*(thetaHat^2 - vk))
+  epsilon <- abs(tau2hat - temp)
+  tau2hat <- temp
+  iterCounter <- iterCounter + 1
+}
+if(tau2hat < 0) { tau2hat <- 0 }
+A <- tau2hat*diag(rep(1,K),K,K)
+deltaTAdelta <- deltaT%*%A%*%t(deltaT)
+wInverse <- solve(ucIvwCovs + deltaTAdelta)
+EB4 <- deltaTAdelta%*%wInverse%*%ucIvwEsts + ucIvwCovs%*%wInverse%*%cIvwEsts
+if(tau2hat != 0) { 
+if(t(thetaHat)%*%thetaHat > .01) {
+  E <- as.numeric(-2*w^2*wConst*(t(thetaHat)%*%thetaHat)^(-1)*t(diffEst)%*%vInv%*%diffEst)*diffEst%*%t(thetaHat)
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C, E)
+  V <- cbind(ucIvwCovs,uccCovMatrix,ucThetaCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix),cIvwCovs,cThetaCovMatrix))
+  V <- rbind(V, cbind(t(ucThetaCovMatrix),t(cThetaCovMatrix),diag(covThetaHat,K,K)))
+} else {
+  gradMatrix <- cbind(diag(rep(1,5),5,5) - C, C)
+  V <- cbind(ucIvwCovs,uccCovMatrix)
+  V <- rbind(V, cbind(t(uccCovMatrix), cIvwCovs))
+}
+covEB4 <- gradMatrix%*%V%*%t(gradMatrix)
+seEB4 <- sqrt(covEB4[5,5])
+} else {
+  covEB4 <- cIvwCovs
+  seEB4 <- sqrt(covEB4[5,5])
+}
+
+estsGEMMETAMC[zzz,1] <- ivwEsts["gi:eiC",1]
+sesGEMMETAMC[zzz,1] <- sqrt(ivwCovs["gi:eiC","gi:eiC"])
+estsGEMMETAMC[zzz,2] <- ucIvwEsts["gi:eiC",1]
+sesGEMMETAMC[zzz,2] <- sqrt(ucIvwCovs["gi:eiC","gi:eiC"])
+estsGEMMETAMC[zzz,3] <- cIvwEsts["gi:eiC",1]
+sesGEMMETAMC[zzz,3] <- sqrt(cIvwCovs["gi:eiC","gi:eiC"])
+estsGEMMETAMC[zzz,4] <- ebIvwEsts["gi:eiC",1]
+sesGEMMETAMC[zzz,4] <- sqrt(ebIvwCovs["gi:eiC","gi:eiC"])
+estsGEMMETAMC[zzz,5] <- EB1["gi:eiC",1]
+sesGEMMETAMC[zzz,5] <- seEB1
+estsGEMMETAMC[zzz,6] <- EB2["gi:eiC",1]
+sesGEMMETAMC[zzz,6] <- seEB2
+estsGEMMETAMC[zzz,7] <- EB3["gi:eiC",1]
+sesGEMMETAMC[zzz,7] <- seEB3
+estsGEMMETAMC[zzz,8] <- EB4["gi:eiC",1]
+sesGEMMETAMC[zzz,8] <- seEB4
+
+estsGMMETAMC[zzz,1] <- ivwEsts["gi",1]
+sesGMMETAMC[zzz,1] <- sqrt(ivwCovs["gi","gi"])
+estsGMMETAMC[zzz,2] <- ucIvwEsts["gi",1]
+sesGMMETAMC[zzz,2] <- sqrt(ucIvwCovs["gi","gi"])
+estsGMMETAMC[zzz,3] <- cIvwEsts["gi",1]
+sesGMMETAMC[zzz,3] <- sqrt(cIvwCovs["gi","gi"])
+estsGMMETAMC[zzz,4] <- ebIvwEsts["gi",1]
+sesGMMETAMC[zzz,4] <- sqrt(ebIvwCovs["gi","gi"])
+estsGMMETAMC[zzz,5] <- EB1["gi",1]
+sesGMMETAMC[zzz,5] <- sqrt(covEB1["gi","gi"])
+estsGMMETAMC[zzz,6] <- EB2["gi",1]
+sesGMMETAMC[zzz,6] <- sqrt(covEB2["gi","gi"])
+estsGMMETAMC[zzz,7] <- EB3["gi",1]
+sesGMMETAMC[zzz,7] <- sqrt(covEB3["gi","gi"])
+estsGMMETAMC[zzz,8] <- EB4["gi",1]
+sesGMMETAMC[zzz,8] <- sqrt(covEB4["gi","gi"])
+
+estsEMMETAMC[zzz,1] <- ivwEsts["eiC",1]
+sesEMMETAMC[zzz,1] <- sqrt(ivwCovs["eiC","eiC"])
+estsEMMETAMC[zzz,2] <- ucIvwEsts["eiC",1]
+sesEMMETAMC[zzz,2] <- sqrt(ucIvwCovs["eiC","eiC"])
+estsEMMETAMC[zzz,3] <- cIvwEsts["eiC",1]
+sesEMMETAMC[zzz,3] <- sqrt(cIvwCovs["eiC","eiC"])
+estsEMMETAMC[zzz,4] <- ebIvwEsts["eiC",1]
+sesEMMETAMC[zzz,4] <- sqrt(ebIvwCovs["eiC","eiC"])
+estsEMMETAMC[zzz,5] <- EB1["eiC",1]
+sesEMMETAMC[zzz,5] <- sqrt(covEB1["eiC","eiC"])
+estsEMMETAMC[zzz,6] <- EB2["eiC",1]
+sesEMMETAMC[zzz,6] <- sqrt(covEB2["eiC","eiC"])
+estsEMMETAMC[zzz,7] <- EB3["eiC",1]
+sesEMMETAMC[zzz,7] <- sqrt(covEB3["eiC","eiC"])
+estsEMMETAMC[zzz,8] <- EB4["eiC",1]
+sesEMMETAMC[zzz,8] <- sqrt(covEB4["eiC","eiC"])
+
+v1 <- vcov(fitLogReg1)[6,6]
+v2 <- vcov(fitLogReg2)[6,6]
+v3 <- vcov(fitLogReg3)[6,6]
+v4 <- vcov(fitLogReg4)[6,6]
+v5 <- vcov(fitLogReg5)[6,6]
+v6 <- vcov(fitLogReg6)[6,6]
+v7 <- vcov(fitLogReg7)[6,6]
+v8 <- vcov(fitLogReg8)[6,6]
+v9 <- vcov(fitLogReg9)[6,6]
+v10 <- vcov(fitLogReg10)[6,6]
+
+univIVWLogEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*est1[5] + 1/v2*est2[5] + 1/v3*est3[5] + 1/v4*est4[5] + 1/v5*est5[5] + 1/v6*est6[5] + 1/v7*est7[5] + 1/v8*est8[5] + 1/v9*est9[5] + 1/v10*est10[5])
+univIVWSELogEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENUml1$CML$cov[6,6]
+v2 <- fitCGENUml2$CML$cov[6,6]
+v3 <- fitCGENUml3$CML$cov[6,6]
+v4 <- fitCGENUml4$CML$cov[6,6]
+v5 <- fitCGENUml5$CML$cov[6,6]
+v6 <- fitCGENUml6$CML$cov[6,6]
+v7 <- fitCGENUml7$CML$cov[6,6]
+v8 <- fitCGENUml8$CML$cov[6,6]
+v9 <- fitCGENUml9$CML$cov[6,6]
+v10 <- fitCGENUml10$CML$cov[6,6]
+
+univIVWUCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ucEst1[5] + 1/v2*ucEst2[5] + 1/v3*ucEst3[5] + 1/v4*ucEst4[5] + 1/v5*ucEst5[5] + 1/v6*ucEst6[5] + 1/v7*ucEst7[5] + 1/v8*ucEst8[5] + 1/v9*ucEst9[5] + 1/v10*ucEst10[5])
+univIVWSEUCEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$CML$cov[6,6]
+v2 <- fitCGENCml2$CML$cov[6,6]
+v3 <- fitCGENCml3$CML$cov[6,6]
+v4 <- fitCGENCml4$CML$cov[6,6]
+v5 <- fitCGENCml5$CML$cov[6,6]
+v6 <- fitCGENCml6$CML$cov[6,6]
+v7 <- fitCGENCml7$CML$cov[6,6]
+v8 <- fitCGENCml8$CML$cov[6,6]
+v9 <- fitCGENCml9$CML$cov[6,6]
+v10 <- fitCGENCml10$CML$cov[6,6]
+
+univIVWCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*cEst1[5] + 1/v2*cEst2[5] + 1/v3*cEst3[5] + 1/v4*cEst4[5] + 1/v5*cEst5[5] + 1/v6*cEst6[5] + 1/v7*cEst7[5] + 1/v8*cEst8[5] + 1/v9*cEst9[5] + 1/v10*cEst10[5])
+univIVWSECEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$EB$cov[6,6]
+v2 <- fitCGENCml2$EB$cov[6,6]
+v3 <- fitCGENCml3$EB$cov[6,6]
+v4 <- fitCGENCml4$EB$cov[6,6]
+v5 <- fitCGENCml5$EB$cov[6,6]
+v6 <- fitCGENCml6$EB$cov[6,6]
+v7 <- fitCGENCml7$EB$cov[6,6]
+v8 <- fitCGENCml8$EB$cov[6,6]
+v9 <- fitCGENCml9$EB$cov[6,6]
+v10 <- fitCGENCml10$EB$cov[6,6]
+
+univIVWEBEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ebEst1[5] + 1/v2*ebEst2[5] + 1/v3*ebEst3[5] + 1/v4*ebEst4[5] + 1/v5*ebEst5[5] + 1/v6*ebEst6[5] + 1/v7*ebEst7[5] + 1/v8*ebEst8[5] + 1/v9*ebEst9[5] + 1/v10*ebEst10[5])
+univIVWSEEBEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+estsGEMETAMC[zzz,1] <- univIVWLogEst
+sesGEMETAMC[zzz,1] <- univIVWSELogEst
+estsGEMETAMC[zzz,2] <- univIVWUCEst
+sesGEMETAMC[zzz,2] <- univIVWSEUCEst
+estsGEMETAMC[zzz,3] <- univIVWCEst
+sesGEMETAMC[zzz,3] <- univIVWSECEst
+estsGEMETAMC[zzz,4] <- univIVWEBEst
+sesGEMETAMC[zzz,4] <- univIVWSEEBEst
+
+v1 <- vcov(fitLogReg1)[2,2]
+v2 <- vcov(fitLogReg2)[2,2]
+v3 <- vcov(fitLogReg3)[2,2]
+v4 <- vcov(fitLogReg4)[2,2]
+v5 <- vcov(fitLogReg5)[2,2]
+v6 <- vcov(fitLogReg6)[2,2]
+v7 <- vcov(fitLogReg7)[2,2]
+v8 <- vcov(fitLogReg8)[2,2]
+v9 <- vcov(fitLogReg9)[2,2]
+v10 <- vcov(fitLogReg10)[2,2]
+
+univIVWLogEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*est1[2] + 1/v2*est2[2] + 1/v3*est3[2] + 1/v4*est4[2] + 1/v5*est5[2] + 1/v6*est6[2] + 1/v7*est7[2] + 1/v8*est8[2] + 1/v9*est9[2] + 1/v10*est10[2])
+univIVWSELogEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENUml1$CML$cov[5,5]
+v2 <- fitCGENUml2$CML$cov[5,5]
+v3 <- fitCGENUml3$CML$cov[5,5]
+v4 <- fitCGENUml4$CML$cov[5,5]
+v5 <- fitCGENUml5$CML$cov[5,5]
+v6 <- fitCGENUml6$CML$cov[5,5]
+v7 <- fitCGENUml7$CML$cov[5,5]
+v8 <- fitCGENUml8$CML$cov[5,5]
+v9 <- fitCGENUml9$CML$cov[5,5]
+v10 <- fitCGENUml10$CML$cov[5,5]
+
+univIVWUCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ucEst1[4] + 1/v2*ucEst2[4] + 1/v3*ucEst3[4] + 1/v4*ucEst4[4] + 1/v5*ucEst5[4] + 1/v6*ucEst6[4] + 1/v7*ucEst7[4] + 1/v8*ucEst8[4] + 1/v9*ucEst9[4] + 1/v10*ucEst10[4])
+univIVWSEUCEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$CML$cov[5,5]
+v2 <- fitCGENCml2$CML$cov[5,5]
+v3 <- fitCGENCml3$CML$cov[5,5]
+v4 <- fitCGENCml4$CML$cov[5,5]
+v5 <- fitCGENCml5$CML$cov[5,5]
+v6 <- fitCGENCml6$CML$cov[5,5]
+v7 <- fitCGENCml7$CML$cov[5,5]
+v8 <- fitCGENCml8$CML$cov[5,5]
+v9 <- fitCGENCml9$CML$cov[5,5]
+v10 <- fitCGENCml10$CML$cov[5,5]
+
+univIVWCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*cEst1[4] + 1/v2*cEst2[4] + 1/v3*cEst3[4] + 1/v4*cEst4[4] + 1/v5*cEst5[4] + 1/v6*cEst6[4] + 1/v7*cEst7[4] + 1/v8*cEst8[4] + 1/v9*cEst9[4] + 1/v10*cEst10[4])
+univIVWSECEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$EB$cov[5,5]
+v2 <- fitCGENCml2$EB$cov[5,5]
+v3 <- fitCGENCml3$EB$cov[5,5]
+v4 <- fitCGENCml4$EB$cov[5,5]
+v5 <- fitCGENCml5$EB$cov[5,5]
+v6 <- fitCGENCml6$EB$cov[5,5]
+v7 <- fitCGENCml7$EB$cov[5,5]
+v8 <- fitCGENCml8$EB$cov[5,5]
+v9 <- fitCGENCml9$EB$cov[5,5]
+v10 <- fitCGENCml10$EB$cov[5,5]
+
+univIVWEBEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ebEst1[4] + 1/v2*ebEst2[4] + 1/v3*ebEst3[4] + 1/v4*ebEst4[4] + 1/v5*ebEst5[4] + 1/v6*ebEst6[4] + 1/v7*ebEst7[4] + 1/v8*ebEst8[4] + 1/v9*ebEst9[4] + 1/v10*ebEst10[4])
+univIVWSEEBEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+
+estsGMETAMC[zzz,1] <- univIVWLogEst
+sesGMETAMC[zzz,1] <- univIVWSELogEst
+estsGMETAMC[zzz,2] <- univIVWUCEst
+sesGMETAMC[zzz,2] <- univIVWSEUCEst
+estsGMETAMC[zzz,3] <- univIVWCEst
+sesGMETAMC[zzz,3] <- univIVWSECEst
+estsGMETAMC[zzz,4] <- univIVWEBEst
+sesGMETAMC[zzz,4] <- univIVWSEEBEst
+
+
+v1 <- vcov(fitLogReg1)[3,3]
+v2 <- vcov(fitLogReg2)[3,3]
+v3 <- vcov(fitLogReg3)[3,3]
+v4 <- vcov(fitLogReg4)[3,3]
+v5 <- vcov(fitLogReg5)[3,3]
+v6 <- vcov(fitLogReg6)[3,3]
+v7 <- vcov(fitLogReg7)[3,3]
+v8 <- vcov(fitLogReg8)[3,3]
+v9 <- vcov(fitLogReg9)[3,3]
+v10 <- vcov(fitLogReg10)[3,3]
+
+univIVWLogEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*est1[2] + 1/v2*est2[2] + 1/v3*est3[2] + 1/v4*est4[2] + 1/v5*est5[2] + 1/v6*est6[2] + 1/v7*est7[2] + 1/v8*est8[2] + 1/v9*est9[2] + 1/v10*est10[2])
+univIVWSELogEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENUml1$CML$cov[2,2]
+v2 <- fitCGENUml2$CML$cov[2,2]
+v3 <- fitCGENUml3$CML$cov[2,2]
+v4 <- fitCGENUml4$CML$cov[2,2]
+v5 <- fitCGENUml5$CML$cov[2,2]
+v6 <- fitCGENUml6$CML$cov[2,2]
+v7 <- fitCGENUml7$CML$cov[2,2]
+v8 <- fitCGENUml8$CML$cov[2,2]
+v9 <- fitCGENUml9$CML$cov[2,2]
+v10 <- fitCGENUml10$CML$cov[2,2]
+
+univIVWUCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ucEst1[1] + 1/v2*ucEst2[1] + 1/v3*ucEst3[1] + 1/v4*ucEst4[1] + 1/v5*ucEst5[1] + 1/v6*ucEst6[1] + 1/v7*ucEst7[1] + 1/v8*ucEst8[1] + 1/v9*ucEst9[1] + 1/v10*ucEst10[1])
+univIVWSEUCEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$CML$cov[2,2]
+v2 <- fitCGENCml2$CML$cov[2,2]
+v3 <- fitCGENCml3$CML$cov[2,2]
+v4 <- fitCGENCml4$CML$cov[2,2]
+v5 <- fitCGENCml5$CML$cov[2,2]
+v6 <- fitCGENCml6$CML$cov[2,2]
+v7 <- fitCGENCml7$CML$cov[2,2]
+v8 <- fitCGENCml8$CML$cov[2,2]
+v9 <- fitCGENCml9$CML$cov[2,2]
+v10 <- fitCGENCml10$CML$cov[2,2]
+
+univIVWCEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*cEst1[1] + 1/v2*cEst2[1] + 1/v3*cEst3[1] + 1/v4*cEst4[1] + 1/v5*cEst5[1] + 1/v6*cEst6[1] + 1/v7*cEst7[1] + 1/v8*cEst8[1] + 1/v9*cEst9[1] + 1/v10*cEst10[1])
+univIVWSECEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+v1 <- fitCGENCml1$EB$cov[2,2]
+v2 <- fitCGENCml2$EB$cov[2,2]
+v3 <- fitCGENCml3$EB$cov[2,2]
+v4 <- fitCGENCml4$EB$cov[2,2]
+v5 <- fitCGENCml5$EB$cov[2,2]
+v6 <- fitCGENCml6$EB$cov[2,2]
+v7 <- fitCGENCml7$EB$cov[2,2]
+v8 <- fitCGENCml8$EB$cov[2,2]
+v9 <- fitCGENCml9$EB$cov[2,2]
+v10 <- fitCGENCml10$EB$cov[2,2]
+
+univIVWEBEst <- solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10)%*%(1/v1*ebEst1[1] + 1/v2*ebEst2[1] + 1/v3*ebEst3[1] + 1/v4*ebEst4[1] + 1/v5*ebEst5[1] + 1/v6*ebEst6[1] + 1/v7*ebEst7[1] + 1/v8*ebEst8[1] + 1/v9*ebEst9[1] + 1/v10*ebEst10[1])
+univIVWSEEBEst <- sqrt(solve(1/v1 + 1/v2 + 1/v3 + 1/v4 + 1/v5 + 1/v6 + 1/v7 + 1/v8 + 1/v9 + 1/v10))
+
+
+estsEMETAMC[zzz,1] <- univIVWLogEst
+sesEMETAMC[zzz,1] <- univIVWSELogEst
+estsEMETAMC[zzz,2] <- univIVWUCEst
+sesEMETAMC[zzz,2] <- univIVWSEUCEst
+estsEMETAMC[zzz,3] <- univIVWCEst
+sesEMETAMC[zzz,3] <- univIVWSECEst
+estsEMETAMC[zzz,4] <- univIVWEBEst
+sesEMETAMC[zzz,4] <- univIVWSEEBEst
+
+####################################
+# End Meta-Analysis
+####################################
+
+zzz <- zzz + 1
+
+}
+}
+
+print(zzz) 
+
+}
+
+
+#######################################
+# Calculate Mean of E: Approx 1.191903
+#######################################
+
+min5 <- function(x) {
+  return(min(5,exp(x)))
+}
+
+Nk <- 100000000
+s1 <- matrix(rbinom(Nk,1,.50),Nk,1)
+s2 <- matrix(rnorm(Nk,0,.5),Nk,1)
+
+x <- matrix(rnorm(Nk,0,.5),Nk,1)*(s1 == 0) + matrix(rnorm(Nk,.1,.5),Nk,1)*(s1 == 1)
+e <- matrix(apply(x,1,min5),Nk,1)
+
+mean(e)
+sd(e)
+
+
+######################################
+# TABLE CODE
+######################################
+
+fxnRB <- function(x,b) {
+  return(mean(x-b,na.rm=T))
+}
+
+fxnMSE <- function(x,b) {
+  return(mean((x-b)^2,na.rm=T))
+}
+
+
+gammaG <- 0.2  
+gammaE <- 0.2  
+gammaGE<- 0.1  
+
+gG <- .3191855717
+gE <- .1266417783
+gGE <- .0634500433
+
+cbind(cbind(round(apply(estsEIPDKMC,2,fxnRB,gE),3), round(apply(sesEIPDKMC,2,mean),4), round(apply(estsEIPDKMC,2,sd),4),
+round(100*apply(estsEIPDKMC,2,fxnMSE,gE),3)),
+cbind(round(apply(estsGIPDKMC,2,fxnRB,gG),3), round(apply(sesGIPDKMC,2,mean),4), round(apply(estsGIPDKMC,2,sd),4),
+round(100*apply(estsGIPDKMC,2,fxnMSE,gG),3)),
+cbind(round(apply(estsGEIPDKMC,2,fxnRB,gGE),3), round(apply(sesGEIPDKMC,2,mean),4), round(apply(estsGEIPDKMC,2,sd),4),
+round(100*apply(estsGEIPDKMC,2,fxnMSE,gGE),3)))
+
+cbind(cbind(round(apply(estsEMMETAMC,2,fxnRB,gE),3), round(apply(sesEMMETAMC,2,mean),4), round(apply(estsEMMETAMC,2,sd),4),
+round(100*apply(estsEMMETAMC,2,fxnMSE,gE),3)),
+cbind(round(apply(estsGMMETAMC,2,fxnRB,gG),3), round(apply(sesGMMETAMC,2,mean),4), round(apply(estsGMMETAMC,2,sd),4),
+round(100*apply(estsGMMETAMC,2,fxnMSE,gG),3)),
+cbind(round(apply(estsGEMMETAMC,2,fxnRB,gGE),3), round(apply(sesGEMMETAMC,2,mean),4), round(apply(estsGEMMETAMC,2,sd),4),
+round(100*apply(estsGEMMETAMC,2,fxnMSE,gGE),3)))
+
+cbind(cbind(round(apply(estsEMETAMC,2,fxnRB,gE),3), round(apply(sesEMETAMC,2,mean),4), round(apply(estsEMETAMC,2,sd),4),
+round(100*apply(estsEMETAMC,2,fxnMSE,gE),3)),
+cbind(round(apply(estsGMETAMC,2,fxnRB,gG),3), round(apply(sesGMETAMC,2,mean),4), round(apply(estsGMETAMC,2,sd),4),
+round(100*apply(estsGMETAMC,2,fxnMSE,gG),3)),
+cbind(round(apply(estsGEMETAMC,2,fxnRB,gGE),3), round(apply(sesGEMETAMC,2,mean),4), round(apply(estsGEMETAMC,2,sd),4),
+round(100*apply(estsGEMETAMC,2,fxnMSE,gGE),3)))
+
